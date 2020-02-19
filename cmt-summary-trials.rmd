@@ -1,0 +1,747 @@
+---
+title: 'Data summary: basic info trials data'
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+rm(list=ls())
+
+library(tidyverse)
+library(readxl)
+library(Hmisc)
+library(data.table)
+library(kableExtra)
+library(gridExtra)
+
+#create function for formatting thousand numbers with commas
+printT <- function(x) {formatC(x, format="d", big.mark=",")}
+```
+
+# PARROT
+
+## Study
+* [Duhig K et al. Placental growth factor testing to assess women with suspected pre-eclampsia: a multicentre, pragmatic, stepped-wedge cluster-randomised controlled trial. Lancet, 2019](https://www.thelancet.com/action/showPdf?pii=S0140-6736%2818%2933212-4)
+* Cluster stepped wedge RCT, concealed PlGF (testing with results concealed from the clinicians) followed by Revealed PlGF, to see how the doctors would make use of the extra info.
+* Inclusions: women 18+, presenting with suspected pre-eclampsia from 20+0 weeks to 36+6 weeks gestation, singleton
+* Outcomes
+  + primary: days from trial entry to dx of pre-eclampsia
+  + secondary: composite of severe maternal adverse events (death, eclampsia, GCS<13, stroke and others), gestation at delivery, pretern birth before 37 weeks, perinatal death (24 weeks gestation til 7 days after birth), late neonatal deaths (8-27 days)
+* Concealed / revealed related to whether or not result of PlGF shared with clinician - participants in both groups included here.
+
+## Data
+
+* "U:\\Datastore\\CMVM\\smgphs\\groups\\sstock-Co-OPT\\CO-OPT\\Data\\RCTs Pippin\\pippin_steroid_use_all+birthweight-parrot.xlsx"
+* Manually split from "Pippin steroid use all.xlsx" to separate from Pelican study
+*  manually removed empty variables, tidy var names ('over' replaces '>', 'under' replaces '<', 'overequal' replaces '>=') and remove duplicates ('Formname', 'Eclampsia')
+
+## Participants
+```{r parrot}
+
+#read in data, sort out names, dates
+parrot <- read_excel("data/derived/pippin_steroid_use_all+birthweight-parrot.xlsx")
+names(parrot)<-make.names(names(parrot),unique = TRUE)
+
+#convert date that was MDY
+parrot$BIRTH...Highest.recorded.diastolic.BP.date <- as.Date(parrot$BIRTH...Highest.recorded.diastolic.BP.date, "%m/%d/%Y")
+parrot$BIRTH...Highest.recorded.systolic.BP.date <- as.Date(parrot$BIRTH...Highest.recorded.systolic.BP.date, "%m/%d/%Y")
+
+# date DMY
+parrot$BASE...EDD.by.scan <- as.Date(parrot$BASE...EDD.by.scan)
+parrot$DIAG...Date.of.first.documented.diagnosis <- as.Date(parrot$DIAG...Date.of.first.documented.diagnosis)
+parrot$BIRTH...Date.of.Birth <- as.Date(parrot$BIRTH...Date.of.Birth)
+parrot$INFDISCH...Date.of.discharge.home <- as.Date(parrot$INFDISCH...Date.of.discharge.home)
+parrot$INFDISCH...Final.date.of.discharge..if.transferred. <- as.Date(parrot$INFDISCH...Final.date.of.discharge..if.transferred.)
+parrot$MEDS...Steroids...Date.of.dose <- as.Date(parrot$MEDS...Steroids...Date.of.dose)
+
+#create subsets of variables to review
+parrot_ids <- parrot %>% select(grep("id", names(parrot), ignore.case = TRUE)) %>% select(patientid, SiteID, id, patid)
+parrot_steroids <- parrot %>% select(grep("steroid", names(parrot), ignore.case = TRUE))
+parrot_dates <- parrot %>% select(grep("date|dt", names(parrot), ignore.case = TRUE))
+parrot_del <- parrot %>% select(grep("del", names(parrot), ignore.case = TRUE))
+
+rm(parrot_dates, parrot_del, parrot_ids, parrot_steroids)
+```
+
+The following table shows numbers of participants who did and did not receive steroids. Among those who did, the number of days between the steroid and the delivery were calculated to indicate optimal versus sub-optimal timing.
+
+```{r parrot n}
+
+# key vars
+parrot_timing <- parrot %>% select(patid, steroids, MEDS...Steroids...Date.of.dose, BIRTH...Date.of.Birth) %>%
+  mutate(daysbefore=as.numeric(BIRTH...Date.of.Birth-MEDS...Steroids...Date.of.dose)) %>%
+  mutate(timing =if_else(daysbefore>7, ">7 days", "<=7 days")) %>% select(patid, steroids, timing)
+
+parrot_timing$steroids <- factor(parrot_timing$steroids,levels = c(0,1), labels = c("no", "yes"))
+
+parrot_sum <- parrot_timing %>% group_by(steroids, timing) %>% summarise(PARROT=n()) %>% ungroup()
+
+#add total column
+parrot_sum[5,] <- c(NA_integer_, NA_integer_, colSums(parrot_sum[,3]))
+#insert "total" - have to first change from factor with fixed labels
+parrot_sum$steroids <- as.character(parrot_sum$steroids)
+parrot_sum[5,1] <- "Total"
+parrot_sum[5,2] <- ""
+
+parrot_sum %>% kable() %>% kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))
+```
+
+## Perinatal outcomes
+
+```{r parrot perinatal outcomes}
+
+parrot_out <- parrot %>% select(patid, Early.neonatal.death..within.7.days., Neonatal.death.prior.to.discharge.n....,
+                                died_0_7d, died_8_28d, died_post_28, miscarriage, Stillbirth, INFDISCH...Baby.s.outcome) %>%
+  mutate(outcome = case_when((INFDISCH...Baby.s.outcome=="Died" & Stillbirth==1) ~ "Stillbirth",
+                             (INFDISCH...Baby.s.outcome=="Died" & died_0_7d==1) ~ "Died 0-7 days",
+                             (INFDISCH...Baby.s.outcome=="Died" & died_8_28d==1) ~ "Died 8-28 days",
+                             (INFDISCH...Baby.s.outcome=="Died" & died_post_28==1) ~ "Died 28+ days",
+                             INFDISCH...Baby.s.outcome=="Transferred to another hospital" ~ "Transferred",
+                             INFDISCH...Baby.s.outcome=="Discharged home" ~ "Discharged",
+                             INFDISCH...Baby.s.outcome=="Miscarriage" ~ "Miscarriage")) %>%
+  select(patid, outcome)
+parrot_out <- left_join(parrot_out, parrot_timing, by = "patid")
+
+outcomes <- parrot_out %>% group_by(steroids, outcome, timing) %>% summarise(Freq=n()) %>%
+  mutate(pc=round(100*Freq/(sum(Freq)),1)) %>% ungroup() %>% arrange(steroids, outcome)
+
+# reshape for table
+outcomes_wide <- outcomes %>% pivot_wider(id_cols = c(steroids, outcome),
+            names_from = timing,
+            values_from = c("Freq", "pc"))
+
+# reorder categories for table
+outcomes_wide %>% kable(col.names = c("Steroids", "Outcome","NA", "<=7 days", ">7 days", "NA","<=7 days", ">7 days")) %>%
+  kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))%>%
+  add_header_above(c(" " = 2, "#" = 3, "%" = 3))
+```
+## Gestational age at birth
+
+```{r parrot gestation, warning=FALSE, fig.height = 3, fig.width = 7, fig.align="center"}
+
+parrot_birth <- parrot %>% select(patid, gest_del, Bwt)
+parrot_birth <- left_join(parrot_birth, parrot_timing, by = "patid")
+
+
+parrot_birth %>% ggplot(aes(gest_del/7, group = as.factor(steroids), fill=as.factor(steroids))) +
+           geom_density(alpha=0.35)+
+  scale_x_continuous(breaks = seq(23, 43, by = 2))
+
+```
+
+
+## Birthweight
+
+
+```{r parrot birthweight, warning=FALSE, fig.align="center"}
+
+parrot_birth$Bwtcat <- cut(parrot_birth$Bwt, c(0, 2000, 2500, 3000, 3500, 6000), labels = c("<2kg", "2-2.5kg", "2.5-3kg", "3-3.5kg", "3.5+kg"))
+
+parrot_birth %>% ggplot(aes(gest_del/7, group = as.factor(steroids), fill=as.factor(steroids))) +
+           geom_density(alpha=0.35) +
+  facet_grid(Bwtcat ~ .) +
+  scale_x_continuous(breaks = seq(23, 43, by = 2)) +
+  scale_y_continuous(breaks = c(0.2, 0.4))
+
+```
+
+```{r parrot birth n}
+parrot_birth %>% group_by(Bwtcat) %>% summarise(Freq=n()) %>% kable() %>%
+  kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))
+
+```
+
+
+# Pelican
+
+##  Study
+* [Chappell L et al. Diagnostic Accuracy of Placental Growth Factor in Women With Suspected Preeclampsia. A Prospective Multicenter Study, Circulation, 2013](https://www.ahajournals.org/doi/pdf/10.1161/CIRCULATIONAHA.113.003215)
+* Prospective, observational, multi-centre study
+* Inclusion: women 16+ presenting with symptoms or signs of suspected preeclampsia between 20+0 and 40+6 weeks of gestation, singleton or twin pregnancy
+* Primary outcome: delivery for confirmed preeclampsia within 14 days of testing for PlGF (used to analyse predictive accuracy of the PlGF measurement).
+
+## Data
+
+* "U:\\Datastore\\CMVM\\smgphs\\groups\\sstock-Co-OPT\\CO-OPT\\Data\\RCTs Pippin\\pippin_steroid_use_all+birthweight-pelican.xlsx"
+* Manually split from "Pippin steroid use all.xlsx" to separate from PARROT study , rename duplicate name ('Expected deliverires per centre per month' -> add (cat) to categorical var version)
+* Manually removed empty variables, tidy var names ('over' replaces '>', 'under' replaces '<', 'overequal' replaces '>=') and remove duplicates ('BASE - Ethnicity')
+
+## Participants
+```{r pelican}
+
+#read in data, sort out names, dates
+pelican <- read_excel("data/derived/pippin_steroid_use_all+birthweight-pelican.xlsx",
+                     col_types = c("text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "numeric", "text", "text",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "text", "numeric",
+                                   "date", "date", "date", "date", "date", "date", "numeric", "text", "numeric", "text", "text", "numeric",
+                                   "numeric", "date", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "text", "numeric", "numeric", "numeric", "numeric", "text", "numeric", "numeric",
+                                   "numeric", "text", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "numeric",
+                                   "date", "date", "date", "date", "date", "date", "numeric", "numeric", "numeric",  "numeric", "text", "numeric",
+                                   "numeric",  "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "text",
+                                   "numeric", "numeric", "numeric", "numeric", "text", "date", "date", "text", "numeric", "text", "text", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",  "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric",
+                                   "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "numeric", "numeric", "numeric",
+                                   "text", "numeric", "numeric", "numeric", "numeric", "text", "text",  "numeric", "numeric", "text"))
+names(pelican)<-make.names(names(pelican),unique = TRUE)
+
+#convert date that was number
+pelican$dtdeliv <- as.Date(pelican$dtdeliv, origin = "1960-01-01")
+pelican$date_start_steroids <- as.Date(pelican$date_start_steroids, origin = "1960-01-01")
+
+pelican$dtdeliv <- as.Date(pelican$dtdeliv, "%Y-%m-%d")
+
+
+#create subsets of variables
+pelican_ids <- pelican %>% select(grep("id", names(pelican), ignore.case = TRUE)) %>% select(patientid, SiteID)
+pelican_steroids <- pelican %>% select(grep("steroid", names(pelican), ignore.case = TRUE))
+pelican_dates <- pelican %>% select(grep("date|dt", names(pelican), ignore.case = TRUE))
+```
+
+The following table shows numbers of participants who did and did not receive steroids. Among those who did, the number of days between the steroid and the delivery were calculated to indicate optimal versus sub-optimal timing.
+
+```{r pelican n}
+
+# key vars
+pelican_key <- pelican %>% select(patientid, steroids, date_start_steroids, dtdeliv) %>%
+  mutate(daysbefore=as.numeric(dtdeliv-date_start_steroids)) %>%
+  mutate(timing =if_else(daysbefore>7, "more than 7 days", "7 days or less"))
+
+pelican_key$steroids <- factor(pelican_key$steroids,levels = c(0,1), labels = c("no", "yes"))
+
+pelican_sum <- pelican_key %>% group_by(steroids, timing) %>% summarise(Pelican=n()) %>% ungroup()
+rm(pelican_dates, pelican_ids, pelican_steroids)
+
+#add total column
+pelican_sum[4,] <- c(NA_integer_, NA_integer_, colSums(pelican_sum[,3]))
+#insert "total" - have to first change from factor with fixed labels
+pelican_sum$steroids <- as.character(pelican_sum$steroids)
+pelican_sum[4,1] <- "Total"
+pelican_sum[4,2] <- ""
+
+pelican_sum %>% kable() %>% kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))
+```
+
+## Neonatal mortality
+
+Not found - have emailed Paul Seed to request as publication includes neonatal mortality info.
+
+
+## Birthweight
+
+```{r pelican birthweight, warning=FALSE, fig.height = 3, fig.width = 7, fig.align="center"}
+
+pelican %>% ggplot(aes(Bwt, group = as.factor(steroids), fill=as.factor(steroids))) +
+           geom_density(alpha=0.35)
+
+```
+
+# STOPPIT2
+
+
+## Study
+* [Norman, J et al. Open randomised trial of the (Arabin) pessary to prevent preterm birth in twin pregnancy with health economics and acceptability: STOPPIT2 - a study protocol. BMJOpen 2018](https://bmjopen.bmj.com/content/8/12/e026430)
+* Multicentre (~58 sites) open label randomised controlled trial of the Arabin pessary (CE marked Device) versus Standard treatment in women with twin pregnancy
+* Inclusions: women 16+ with a confirmed twin pregnancy at less than 20+6 weeks gestation
+* Two phases
+  + a SCREENING phase, in which women with a short cervix (cervical length of ≤35mm) will be identified,
+  + and a TREATMENT phase, in which women with a short cervix will be randomised to treatment with Arabin pessary or Standard treatment. Randomisation and pessary insertion will be carried out between 18+0 and 20+6 weeks gestation. Women with a short cervix (≤35mm) who agree to participate in the treatment phase of the study will be randomised to either treatment with the Arabin cervical pessary or to standard care (no additional treatment). Women randomised to standard care will be routinely monitored and data collected as detailed for the study visits.
+* Primary outcomes:
+  + **Obstetric** Birth before 34+0 weeks following the spontaneous onset of labour. Preterm prelabour rupture of membranes < 34 weeks with or without contractions will also be included in this definition of spontaneous onset of labour. Iatrogenic delivery due to maternal or fetal conditions will not be considered to fulfil the criteria for the primary outcome.
+  + **Neonatal** composite of adverse outcomes including stillbirth or neonatal death, periventricular leukomalacia, early respiratory morbidity (defined as any need for supplemental oxygen >30%, CPAP [continuous positive airway pressure] or intra-tracheal ventilation or surfactant replacement therapy within the first week of life), intraventricular haemorrhage, necrotising enterocolitis and proven sepsis all measured up to four weeks after the expected date of delivery determined by first trimester ultrasound (according to NICE guidelines) and calculated electronically, manually or using an on line calculator (note: obstetric “wheels” are inaccurate and should not be used).
+
+## Data
+
+* "U:\\Datastore\\CMVM\\smgphs\\groups\\sstock-Co-OPT\\CO-OPT\\Data\\STOPPIT2\\STOPPIT2_20200203_CO-OPT.xlsx"
+* Data provided in 27 tables
+* Categorical variables manually labelled using data dictionary
+
+
+```{r read in stoppit2, warning=FALSE}
+
+STOPPIT2names <- excel_sheets("M:/ctochel-network/ctochel-network-Co_OPT/data-summaries/data/source/STOPPIT2_20200203.xlsx")
+STOPPIT2 <- lapply(excel_sheets("M:/ctochel-network/ctochel-network-Co_OPT/data-summaries/data/source/STOPPIT2_20200203.xlsx"),
+                read_excel, path = "M:/ctochel-network/ctochel-network-Co_OPT/data-summaries/data/source/STOPPIT2_20200203.xlsx")
+
+# remove tables not used in initial wokr
+#STOPPIT2_tblCentres <- as.data.frame(STOPPIT2[[1]])
+
+STOPPIT2_tblCRFBabyOutcomes <- as.data.frame(STOPPIT2[[2]])#----------------------------------------------------------------------------apply labels
+STOPPIT2_tblCRFBabyOutcomes$Baby <- factor(STOPPIT2_tblCRFBabyOutcomes$Baby, levels = c(1,2), labels = c("twin 1", "twin 2"))
+STOPPIT2_tblCRFBabyOutcomes$AdmissionNeonatal <- factor(STOPPIT2_tblCRFBabyOutcomes$AdmissionNeonatal, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$Transferred <- factor(STOPPIT2_tblCRFBabyOutcomes$Transferred, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$DischargeHome <- factor(STOPPIT2_tblCRFBabyOutcomes$DischargeHome, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$Death <- factor(STOPPIT2_tblCRFBabyOutcomes$Death, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$PostMortem <- factor(STOPPIT2_tblCRFBabyOutcomes$PostMortem, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$PMPermission <- factor(STOPPIT2_tblCRFBabyOutcomes$PMPermission, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$ArtificialSurfactant <- factor(STOPPIT2_tblCRFBabyOutcomes$ArtificialSurfactant, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$Cranial <- factor(STOPPIT2_tblCRFBabyOutcomes$Cranial, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$CranialFindings <- factor(STOPPIT2_tblCRFBabyOutcomes$CranialFindings, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$CranialLeukomacia <- factor(STOPPIT2_tblCRFBabyOutcomes$CranialLeukomacia, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$CranialHaemorrhage <- factor(STOPPIT2_tblCRFBabyOutcomes$CranialHaemorrhage, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$CranialOther <- factor(STOPPIT2_tblCRFBabyOutcomes$CranialOther, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFBabyOutcomes$BloodStreamTime <- factor(STOPPIT2_tblCRFBabyOutcomes$BloodStreamTime, levels = c(1,2), labels = c("within 72hrs", "72hrs-discharge"))
+STOPPIT2_tblCRFBabyOutcomes$ConcernsAtDischarge <- factor(STOPPIT2_tblCRFBabyOutcomes$ConcernsAtDischarge, levels = c(1,2,3,4,5),
+                                                          labels = c("none", "minor", "clinically normal at discharge but major concerns",
+                                                                     "neurological abnormality at discharge", "not yet discharged"))
+
+STOPPIT2_tblCRFCervicalLength <- as.data.frame(STOPPIT2[[3]])
+
+
+STOPPIT2_tblCRFDemographics <- as.data.frame(STOPPIT2[[9]])#-----------------------------------------------------------------------------apply labels
+STOPPIT2_tblCRFDemographics$Ethnicity <- factor(STOPPIT2_tblCRFDemographics$Ethnicity, levels = c(1:13),
+                                                                                                   labels = c("Indian/Pakistani/Bangladeshi", "Afro-Caribbean",
+                                                                                                              "Hindu-Caribbean", "African descent", "White/Caucasian",
+                                                                                                              "Asian descent", "Native Hawaiian/ Pacific Islander",
+                                                                                                              "American Indian/ Alaskan Native",
+                                                                                                              "Middle Eastern/North African (Turkish, Moroccan)",
+                                                                                                              "Hispanic or Latina", "More than one", "Other", "Unknown"))
+STOPPIT2_tblCRFDemographics$MaritalStatus <- factor(STOPPIT2_tblCRFDemographics$MaritalStatus, levels = c(1,2, 3, 98),
+                                                    labels = c("never married", "divorced, widowed or separated", "married or living with partner", NA_character_))
+STOPPIT2_tblCRFDemographics$Employment <- factor(STOPPIT2_tblCRFDemographics$Employment, levels = c(1,2, 3, 98),
+                                                    labels = c("none", "part time", "full time", NA_character_))
+
+
+STOPPIT2_tblCRFHospitalAdmissionLabour <- as.data.frame(STOPPIT2[[10]])#-------------------------------------------------------------------apply labels
+STOPPIT2_tblCRFHospitalAdmissionLabour$AdmissionReason <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$AdmissionReason, levels = c(1,2, 3),
+                                                    labels = c("threatened preterm labour", "preterm membrane rupture", "suspected PROM"))
+STOPPIT2_tblCRFHospitalAdmissionLabour$ContractionsPresent <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$ContractionsPresent,
+                                                                     levels = c(1,2,3), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Ward <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$Ward,
+                                                                     levels = c(1,2,3,98), labels = c("labour", "antenatal", "other", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Tocolysis <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$Tocolysis,
+                                                                     levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Steroid <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$Steroid,
+                                                                     levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$SulphateTherapy <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$SulphateTherapy,
+                                                                     levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Transfer <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$Transfer,
+                                                                     levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$LabourTransfer <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$LabourTransfer,
+                                                                     levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Discharged <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$Discharged,
+                                                                     levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$LabourDelivery <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$LabourDelivery,
+                                                                     levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Causality <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$Causality,
+                                                                     levels = c(1,2), labels = c("unrelated to treatment", "related to treatment"))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Severity <- ordered(STOPPIT2_tblCRFHospitalAdmissionLabour$Severity,
+                                                                     levels = c(1,2,3), labels = c("mild", "moderate", "severe"))
+STOPPIT2_tblCRFHospitalAdmissionLabour$Expectedness <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$Expectedness,
+                                                                     levels = c(1,2), labels = c("expected", "unexpected"))
+STOPPIT2_tblCRFHospitalAdmissionLabour$EventReviewed <- factor(STOPPIT2_tblCRFHospitalAdmissionLabour$EventReviewed,
+                                                                     levels = c(1,2), labels = c("yes", "no"))
+
+
+STOPPIT2_tblCRFLabourDelivery <- as.data.frame(STOPPIT2[[18]]) #-------------------------------------------------------------------------apply labels
+STOPPIT2_tblCRFLabourDelivery$LabourOnset <- factor(STOPPIT2_tblCRFLabourDelivery$LabourOnset,
+                                                                     levels = c(1,2,3,4,5,98), labels = c("spontaneous", "induced",
+                                                                                                          "elective CS prior to labour onset / induction of labour",
+                                                                                                          "selective induction", "did not labour", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$LabourOnsetSpontaneous <- factor(STOPPIT2_tblCRFLabourDelivery$LabourOnsetSpontaneous, levels = c(1,2,98), labels = c("yes", "no", "unknown"))
+STOPPIT2_tblCRFLabourDelivery$LabourInduced <- factor(STOPPIT2_tblCRFLabourDelivery$LabourInduced, levels = c(1,2,98), labels = c("yes", "no", "not applicable"))
+STOPPIT2_tblCRFLabourDelivery$InductionOfLabour <- factor(STOPPIT2_tblCRFLabourDelivery$InductionOfLabour, levels = c(1,2,3,4,5,6,7,8,9,98),
+                                                          labels = c("none", "artificial rupture of membranes (ARM)", "oxytocics", "ARM + oxytocin",
+                                                                     "prostaglandins (includes cervical priming)", "prostaglandins + ARM", "prostaglandins + oxytocin",
+                                                                     "prosaglandins + ARM + oxytocin", "other", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$PregnancyOutcomeTwinOne <- factor(STOPPIT2_tblCRFLabourDelivery$PregnancyOutcomeTwinOne, levels = c(1,2,3,4),
+                                                          labels = c("livebirth", "stillbirth (of a dead fetus at or after 24 weeks +0 days gestation)",
+                                                                     "neonatal death (dying within the 28th day of birth)",
+                                                                     "miscarriage (of a dead fetus ending before 24 weeks"))
+STOPPIT2_tblCRFLabourDelivery$PregnancyOutcomeTwinTwo <- factor(STOPPIT2_tblCRFLabourDelivery$PregnancyOutcomeTwinTwo, levels = c(1,2,3,4),
+                                                          labels = c("livebirth", "stillbirth (of a dead fetus at or after 24 weeks +0 days gestation)",
+                                                                     "neonatal death (dying within the 28th day of birth)",
+                                                                     "miscarriage (of a dead fetus ending before 24 weeks"))
+STOPPIT2_tblCRFLabourDelivery$TwinOneMethodOfDelivery <- factor(STOPPIT2_tblCRFLabourDelivery$TwinOneMethodOfDelivery, levels = c(1:7),
+                                                          labels = c("SVD", "LSCS in labour", "LSCS pre labour", "forceps", "vaginal breech (spontaneous or assisted)",
+                                                                     "ventouse", "other"))
+STOPPIT2_tblCRFLabourDelivery$TwinTwoMethodOfDelivery <- factor(STOPPIT2_tblCRFLabourDelivery$TwinTwoMethodOfDelivery, levels = c(1:7),
+                                                          labels = c("SVD", "LSCS in labour", "LSCS pre labour", "forceps", "vaginal breech (spontaneous or assisted)",
+                                                                     "ventouse", "other"))
+STOPPIT2_tblCRFLabourDelivery$TwinOneSex <- factor(STOPPIT2_tblCRFLabourDelivery$TwinOneSex, levels = c(1,2,3,98),
+                                                   labels = c("male", "female", "indeterminate", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$TwinTwoSex <- factor(STOPPIT2_tblCRFLabourDelivery$TwinTwoSex, levels = c(1,2,3,98),
+                                                   labels = c("male", "female", "indeterminate", NA_character_))
+
+#replace 98 in integer var with NA
+STOPPIT2_tblCRFLabourDelivery$TwinOneApgar1Min[STOPPIT2_tblCRFLabourDelivery$TwinOneApgar1Min==98] <- NA_integer_
+STOPPIT2_tblCRFLabourDelivery$TwinTwoApgar1Min[STOPPIT2_tblCRFLabourDelivery$TwinTwoApgar1Min==98] <- NA_integer_
+STOPPIT2_tblCRFLabourDelivery$TwinOneApgar5Min[STOPPIT2_tblCRFLabourDelivery$TwinOneApgar5Min==98] <- NA_integer_
+STOPPIT2_tblCRFLabourDelivery$TwinTwoApgar5Min[STOPPIT2_tblCRFLabourDelivery$TwinTwoApgar5Min==98] <- NA_integer_
+
+STOPPIT2_tblCRFLabourDelivery$ChorioamnionitisTwinOne <- factor(STOPPIT2_tblCRFLabourDelivery$ChorioamnionitisTwinOne, levels = c(1,2,98),
+                                                                labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$ChorioamnionitisTwinTwo <- factor(STOPPIT2_tblCRFLabourDelivery$ChorioamnionitisTwinTwo, levels = c(1,2,98),
+                                                                labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$TwinOneObservation <- factor(STOPPIT2_tblCRFLabourDelivery$TwinOneObservation, levels = c(1:7,98),
+                                                           labels = c("nil / facial oxygen", "intubation for IPPV (with drugs)", "intubation for IPPV (with  no drugs)",
+                                                                      "bag and mask (no drugs)", "drugs only (usually nalaxone)", "bag and mask (with drugs)",
+                                                                      "other", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$TwinTwoObservation <- factor(STOPPIT2_tblCRFLabourDelivery$TwinTwoObservation, levels = c(1:7,98),
+                                                           labels = c("nil / facial oxygen", "intubation for IPPV (with drugs)", "intubation for IPPV (with  no drugs)",
+                                                                      "bag and mask (no drugs)", "drugs only (usually nalaxone)", "bag and mask (with drugs)",
+                                                                      "other", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$CervicalSuture <- factor(STOPPIT2_tblCRFLabourDelivery$CervicalSuture, levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$CervicalSutureType <- factor(STOPPIT2_tblCRFLabourDelivery$CervicalSutureType, levels = c(1,2,98),
+                                                           labels = c("cervical", "abdominal", NA_character_))
+
+STOPPIT2_tblCRFLabourDelivery$EarlyProgesterone <- factor(STOPPIT2_tblCRFLabourDelivery$EarlyProgesterone, levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$EarlyProgesteroneType <- factor(STOPPIT2_tblCRFLabourDelivery$EarlyProgesteroneType, levels = c(1,2,3,98),
+                                                              labels = c("pessary (vaginal)", "injection (IM)", "oral", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$ArabinPessary <- factor(STOPPIT2_tblCRFLabourDelivery$ArabinPessary, levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$ArabinPessaryType <- factor(STOPPIT2_tblCRFLabourDelivery$ArabinPessaryType, levels = c(1,2,98),
+                                                              labels = c("perforated (ASQ)", "non perforated (type A)", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$Steroids <- factor(STOPPIT2_tblCRFLabourDelivery$Steroids, levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$MagSulph <- factor(STOPPIT2_tblCRFLabourDelivery$MagSulph, levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFLabourDelivery$Antibiotics <- factor(STOPPIT2_tblCRFLabourDelivery$Antibiotics, levels = c(1,2,98), labels = c("yes", "no", NA_character_))
+
+STOPPIT2_tblCRFMedicalHistory <- as.data.frame(STOPPIT2[[22]]) #-------------------------------------------------------------------------apply labels
+STOPPIT2_tblCRFMedicalHistory$LMPSource <- factor(STOPPIT2_tblCRFMedicalHistory$LMPSource, levels = c(1,2,3,98),
+                                                  labels = c("actual", "approximate", "derived", "not applicable"))
+STOPPIT2_tblCRFMedicalHistory$Chorionicity <- factor(STOPPIT2_tblCRFMedicalHistory$Chorionicity, levels = c(1,2),
+                                                     labels = c("monochorionic diamnotic", "dichorionic diamnotic"))
+STOPPIT2_tblCRFMedicalHistory$Tobacco <- factor(STOPPIT2_tblCRFMedicalHistory$Tobacco, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFMedicalHistory$ECigarette <- factor(STOPPIT2_tblCRFMedicalHistory$ECigarette, levels = c(1,2,3), labels = c("yes", "no", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$DrugTaking <- factor(STOPPIT2_tblCRFMedicalHistory$DrugTaking, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFMedicalHistory$Alcohol <- factor(STOPPIT2_tblCRFMedicalHistory$Alcohol, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFMedicalHistory$ScanningPerformed <- factor(STOPPIT2_tblCRFMedicalHistory$ScanningPerformed, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFMedicalHistory$FetalAnomalyOne <- factor(STOPPIT2_tblCRFMedicalHistory$FetalAnomalyOne, levels = c(1,2,3,98),
+                                                        labels = c("normal", "defined abnormality", "uncertain abnormality", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FetalAnomalyTwo <- factor(STOPPIT2_tblCRFMedicalHistory$FetalAnomalyTwo, levels = c(1,2,3,98),
+                                                        labels = c("normal", "defined abnormality", "uncertain abnormality", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$Amniocentesis <- factor(STOPPIT2_tblCRFMedicalHistory$Amniocentesis, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFMedicalHistory$AmniocentesisResultOne <- factor(STOPPIT2_tblCRFMedicalHistory$AmniocentesisResultOne, levels = c(1,2,98),
+                                                               labels = c("normal", "other", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$AmniocentesisResultTwo <- factor(STOPPIT2_tblCRFMedicalHistory$AmniocentesisResultTwo, levels = c(1,2,98),
+                                                               labels = c("normal", "other", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$CVSPerformed <- factor(STOPPIT2_tblCRFMedicalHistory$CVSPerformed, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFMedicalHistory$CVSResultOne <- factor(STOPPIT2_tblCRFMedicalHistory$CVSResultOne, levels = c(1,2,98), labels = c("normal", "other", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$CVSResultTwo <- factor(STOPPIT2_tblCRFMedicalHistory$CVSResultTwo, levels = c(1,2,98), labels = c("normal", "other", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyOneOutcome <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyOneOutcome, levels = c(1:6,98),
+                                                            labels = c("miscarriage", "ectopic", "TOP", "livebirth",
+                                                                       "stillbirth (baby born with no sign of life from 24 weeks onwards)",
+                                                                       "livebirth followed by neonatal death", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoOutcome <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoOutcome, levels = c(1:6,98),
+                                                            labels = c("miscarriage", "ectopic", "TOP", "livebirth",
+                                                                       "stillbirth (baby born with no sign of life from 24 weeks onwards)",
+                                                                       "livebirth followed by neonatal death", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeOutcome <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeOutcome, levels = c(1:6,98),
+                                                            labels = c("miscarriage", "ectopic", "TOP", "livebirth",
+                                                                       "stillbirth (baby born with no sign of life from 24 weeks onwards)",
+                                                                       "livebirth followed by neonatal death", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyOneDelivery <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyOneDelivery, levels = c(1:6,97, 98),
+                                                            labels = c("LCCS in labour", "LSCS not in labour", "forceps", "SVD",
+                                                                       "ventouse", "vaginal breech", "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoDelivery <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoDelivery, levels = c(1:6,97, 98),
+                                                            labels = c("LCCS in labour", "LSCS not in labour", "forceps", "SVD",
+                                                                       "ventouse", "vaginal breech", "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeDelivery <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeDelivery, levels = c(1:6,97, 98),
+                                                            labels = c("LCCS in labour", "LSCS not in labour", "forceps", "SVD",
+                                                                       "ventouse", "vaginal breech", "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyOneWeightMissing <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyOneWeightMissing, levels = c(96,97),
+                                                                  labels = c(NA_character_, "not applicable"))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyOneSex <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyOneSex, levels = c(1,2,3,98),
+                                                        labels = c("male", "female", "indeterminate", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoWeightMissing <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoWeightMissing, levels = c(96,97),
+                                                                  labels = c(NA_character_, "not applicable"))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoSex <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyTwoSex, levels = c(1,2,3,98),
+                                                        labels = c("male", "female", "indeterminate", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeWeightMissing <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeWeightMissing, levels = c(96,97),
+                                                                    labels = c(NA_character_, "not applicable"))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeSex <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyThreeSex, levels = c(1,2,97,98),
+                                                          labels = c("spontaneous", "induced", "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabyLabour <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabyLabour, levels = c(1,2,3,98),
+                                                          labels = c("male", "female", "indeterminate", NA_character_))
+STOPPIT2_tblCRFMedicalHistory$FirstBabySpontaneous <- factor(STOPPIT2_tblCRFMedicalHistory$FirstBabySpontaneous, levels = c(1,2), labels = c("yes", "no"))
+
+STOPPIT2_tblPatients <- as.data.frame(STOPPIT2[[26]]) #-------------------------------------------------------------------------apply labels
+STOPPIT2_tblPatients$HowRandomised <- factor(STOPPIT2_tblPatients$HowRandomised, levels = c(1,2,3,4), labels = c("web", "pda", "telephone", "manual"))
+STOPPIT2_tblPatients$Chorionicity <- factor(STOPPIT2_tblPatients$Chorionicity, levels = c(1,2), labels = c("mono-chorionic", "di-chorionic"))
+STOPPIT2_tblPatients$CervicalLengthBand <- ordered(STOPPIT2_tblPatients$CervicalLengthBand, levels = c(1,2), labels = c("<=30", ">30 (<=35)"))
+STOPPIT2_tblPatients$TreatmentNo <- ordered(STOPPIT2_tblPatients$TreatmentNo, levels = c(1,2), labels = c("Arabin Cervical Pessary", "Standard care"))
+
+STOPPIT2_tblTreatments <- as.data.frame(STOPPIT2[[27]])
+
+############# collect numbers for summary - spread if more than one record per StudyNo, format dates
+medhist <- STOPPIT2_tblCRFMedicalHistory %>% select(StudyNo) %>% mutate(medhist=1) #one row per person
+demogs <- STOPPIT2_tblCRFDemographics %>% select(StudyNo) %>% mutate(demogs=1) #one row per person
+pats <- STOPPIT2_tblPatients %>% select(StudyNo, CentreNo, TreatmentNo) %>% mutate(pats=1) #one row per person
+hal <- STOPPIT2_tblCRFHospitalAdmissionLabour %>%
+  select(StudyNo, Steroid, SteroidDateStarted, SteroidDateStopped, DateOfAdmission) %>%
+  group_by(StudyNo) %>%
+  mutate(admitno= row_number(), SteroidDateStarted=as.Date(SteroidDateStarted), SteroidDateStopped=as.Date(SteroidDateStopped),
+         DateOfAdmission=as.Date(DateOfAdmission),) %>% ungroup()%>%
+  pivot_wider(id_cols = StudyNo, names_from = admitno, values_from = c(Steroid, SteroidDateStarted, SteroidDateStopped, DateOfAdmission)) %>% mutate(hal=1)
+
+labdel <- STOPPIT2_tblCRFLabourDelivery %>% select(StudyNo, TwinOneDateOfDelivery, TwinTwoDateOfDelivery,
+                                                   TwinOneWeight, TwinTwoWeight, Steroids, SteroidsDailyDose, SteroidsDays) %>%
+  mutate(labdel=1, TwinOneDateOfDelivery= as.Date(TwinOneDateOfDelivery), TwinTwoDateOfDelivery= as.Date(TwinTwoDateOfDelivery))  #one row per person
+babyout <- STOPPIT2_tblCRFBabyOutcomes %>% select(StudyNo, Baby, DateOfDeath) %>% spread(key = Baby, value = DateOfDeath) %>%
+  rename(DeathDtTw1=`twin 1`, DeathDtTw2=`twin 2`)  %>% mutate(babyout=1, DeathDtTw1=as.Date(DeathDtTw1), DeathDtTw2=as.Date(DeathDtTw2)) #one row per person
+
+cervlen <- STOPPIT2_tblCRFCervicalLength %>% select(StudyNo, DateOfCervicalLength, CervicalLength) %>%
+  mutate(cervlen=1, DateOfCervicalLength=as.Date(DateOfCervicalLength)) #one row per person
+
+STOPPIT2_key <- full_join(medhist, demogs, by = "StudyNo")
+STOPPIT2_key <- full_join(STOPPIT2_key, pats, by = "StudyNo")
+STOPPIT2_key <- full_join(STOPPIT2_key,hal, by = "StudyNo")
+STOPPIT2_key <- full_join(STOPPIT2_key,labdel, by = "StudyNo")
+STOPPIT2_key <- full_join(STOPPIT2_key,babyout, by = "StudyNo")
+STOPPIT2_key <- full_join(STOPPIT2_key,cervlen, by = "StudyNo")
+
+rm(medhist, demogs, pats, hal, labdel, babyout, cervlen)
+
+```
+
+
+```{r include=FALSE}
+#STOPPIT2_tblCRFComplications_Treatment <- as.data.frame(STOPPIT2[[4]]) # empty
+STOPPIT2_tblCRFComplicationsAntenatal <- as.data.frame(STOPPIT2[[5]])
+STOPPIT2_tblCRFComplicationsAntenatal_Ma <- as.data.frame(STOPPIT2[[6]])
+STOPPIT2_tblCRFComplicationsAntenatal_Tw <- as.data.frame(STOPPIT2[[7]])
+STOPPIT2_tblCRFComplicationsAntenatal_T1 <- as.data.frame(STOPPIT2[[8]])
+
+
+
+STOPPIT2_tblCRFHospitalAdmissionLabour_D <- as.data.frame(STOPPIT2[[11]])  ## has steroid type but only 7 observations - not useful?
+STOPPIT2_tblCRFHospitalAdmissionLabour_T <- as.data.frame(STOPPIT2[[12]])
+
+STOPPIT2_tblCRFHospitalAdmissionOther <- as.data.frame(STOPPIT2[[13]])#-----------------------------------------------------apply labels
+STOPPIT2_tblCRFHospitalAdmissionOther$Ward <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$Ward,
+                                                                     levels = c(1,2,3), labels = c("labour", "antenatal", "other"))
+STOPPIT2_tblCRFHospitalAdmissionOther$ACTwin1 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$ACTwin1, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$ACTwin2 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$ACTwin2, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$LiquorTwin1 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$LiquorTwin1, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$LiquorTwin2 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$LiquorTwin2, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$DopplerTwin1 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$DopplerTwin1, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$DopplerTwin2 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$DopplerTwin2, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$AbsentEDFTwin1 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$AbsentEDFTwin1, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$AbsentEDFTwin2 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$AbsentEDFTwin2, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$ReverseEDFTwin1 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$ReverseEDFTwin1, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$ReverseEDFTwin2 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$ReverseEDFTwin2, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$AbnormalCTGTwin1 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$AbnormalCTGTwin1, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$AbnormalCTGTwin2 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$AbnormalCTGTwin2, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$TwinToTwinTransfusionTwin1 <- ordered(STOPPIT2_tblCRFHospitalAdmissionOther$TwinToTwinTransfusionTwin1,
+                                                                     levels = c(1,2,3,4,5), labels = c("stage I", "stage II", "stage III", "stage Iv", "stage v"))
+STOPPIT2_tblCRFHospitalAdmissionOther$TwinToTwinTransfusionTwin2 <- ordered(STOPPIT2_tblCRFHospitalAdmissionOther$TwinToTwinTransfusionTwin2,
+                                                                     levels = c(1,2,3,4,5), labels = c("stage I", "stage II", "stage III", "stage Iv", "stage v"))
+STOPPIT2_tblCRFHospitalAdmissionOther$FetalDemiseTwin1 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$FetalDemiseTwin1, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$FetalDemiseTwin2 <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$FetalDemiseTwin2, levels = c(1,2), labels = c("yes", "no"))
+STOPPIT2_tblCRFHospitalAdmissionOther$Causality <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$Causality,
+                                                                     levels = c(1,2), labels = c("unrelated to treatment", "related to treatment"))
+STOPPIT2_tblCRFHospitalAdmissionOther$Severity <- ordered(STOPPIT2_tblCRFHospitalAdmissionOther$Severity,
+                                                                     levels = c(1,2,3), labels = c("mild", "moderate", "severe"))
+STOPPIT2_tblCRFHospitalAdmissionOther$Expectedness <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$Expectedness,
+                                                                     levels = c(1,2), labels = c("expected", "unexpected"))
+STOPPIT2_tblCRFHospitalAdmissionOther$EventReviewed <- factor(STOPPIT2_tblCRFHospitalAdmissionOther$EventReviewed,
+                                                                     levels = c(1,2), labels = c("yes", "no"))
+
+STOPPIT2_tblCRFHospitalAdmissionOther_Ma <- as.data.frame(STOPPIT2[[14]])
+STOPPIT2_tblCRFHospitalAdmissionOther_Tr <- as.data.frame(STOPPIT2[[15]])
+STOPPIT2_tblCRFHospitalAdmissionOther_Tw <- as.data.frame(STOPPIT2[[16]])
+STOPPIT2_tblCRFHospitalAdmissionOther_T1 <- as.data.frame(STOPPIT2[[17]])
+
+STOPPIT2_tblCRFLabourDelivery_Condition <- as.data.frame(STOPPIT2[[19]])
+STOPPIT2_tblCRFLabourDelivery_Medication <- as.data.frame(STOPPIT2[[20]])
+STOPPIT2_tblCRFLabourDelivery_Tocolytics <- as.data.frame(STOPPIT2[[21]])
+
+
+
+
+STOPPIT2_tblCRFMedicalHistory_Condition <- as.data.frame(STOPPIT2[[23]])
+STOPPIT2_tblCRFMedicalHistory_Medication <- as.data.frame(STOPPIT2[[24]])
+STOPPIT2_tblCRFMedicalHistory_Pregnancy <- as.data.frame(STOPPIT2[[25]]) #-------------------------------------------------------------------------apply labels
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$DeliveryOne <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$DeliveryOne, levels = c(1:6,97, 98),
+                                                            labels = c("LCCS in labour", "LSCS not in labour", "forceps", "SVD",
+                                                                       "ventouse", "vaginal breech", "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$DeliveryTwo <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$DeliveryTwo, levels = c(1:6,97, 98),
+                                                            labels = c("LCCS in labour", "LSCS not in labour", "forceps", "SVD",
+                                                                       "ventouse", "vaginal breech", "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$DeliveryThree <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$DeliveryThree, levels = c(1:6,97, 98),
+                                                            labels = c("LCCS in labour", "LSCS not in labour", "forceps", "SVD",
+                                                                       "ventouse", "vaginal breech", "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$OutcomeOne <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$OutcomeOne, levels = c(1:6, 98),
+                                                            labels = c("miscarriage", "ectopic", "TOP", "livebirth",
+                                                                       "stillbirth (baby born with no sign of life from 24 weeks onwards)",
+                                                                       "livebirth followed by neonatal death", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$OutcomeTwo <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$OutcomeTwo, levels = c(1:6, 98),
+                                                            labels = c("miscarriage", "ectopic", "TOP", "livebirth",
+                                                                       "stillbirth (baby born with no sign of life from 24 weeks onwards)",
+                                                                       "livebirth followed by neonatal death", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$OutcomeThree <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$OutcomeThree, levels = c(1:6, 98),
+                                                            labels = c("miscarriage", "ectopic", "TOP", "livebirth",
+                                                                       "stillbirth (baby born with no sign of life from 24 weeks onwards)",
+                                                                       "livebirth followed by neonatal death", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$WeightOneMissing <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$WeightOneMissing, levels = c(96:98),
+                                                            labels = c(NA_character_, "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$WeightTwoMissing <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$WeightTwoMissing, levels = c(96:98),
+                                                            labels = c(NA_character_, "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$WeightThreeMissing <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$WeightThreeMissing, levels = c(96:98),
+                                                            labels = c(NA_character_, "not applicable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$SexOne <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$SexOne, levels = c(1:3,98),
+                                                            labels = c("male", "female", "indeterminate", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$SexTwo <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$SexTwo, levels = c(1:3,98),
+                                                            labels = c("male", "female", "indeterminate", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$SexThree <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$SexThree, levels = c(1:3,98),
+                                                            labels = c("male", "female", "indeterminate", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$Labour <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$Labour, levels = c(1,2,97,98),
+                                                            labels = c("spontaneous", "induced", "not appliable", NA_character_))
+STOPPIT2_tblCRFMedicalHistory_Pregnancy$BirthSpontaneous <- factor(STOPPIT2_tblCRFMedicalHistory_Pregnancy$BirthSpontaneous, levels = c(1,2,97,98),
+                                                            labels = c("yes", "no", "not appliable", NA_character_))
+
+```
+
+
+## Participants
+
+The variable 'StudyNo' is assumed to indicate individual participants. This ID is present in different numbers across tables.
+
+A count of unique StudyNo in several key tables is shown below.
+
+```{r STOPPIT2 id check, warning=FALSE}
+STOPPIT2_idcount <-STOPPIT2_key %>% select(medhist, demogs, pats, hal, labdel, babyout, cervlen) %>%  summarise_all(funs(sum), na.rm=TRUE)
+
+STOPPIT2_idcount %>%
+  kable(col.names = c("Medical History", "Demographics", "Patients", "Hospital Admission Labour", "Labour Delivery", "Baby Outcomes", "Cervical Length")) %>%
+  kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))
+```
+
+There are two tables indicating use of steroids (yes/no):
+
+* Hospital Admission Labour
+  + Steroid ("given this admission")
+  + SteroidDateStarted
+  + SteroidDateStopped
+* Labour Delivery
+  + Steroids ("received after screening or randomisation")
+  + SteroidsDailyDose
+  + SteroidsDays
+
+The overlap of 'yes' values for these two sources is shown below:
+
+```{r stoppit2 steroids}
+
+STOPPIT2_key <- STOPPIT2_key %>%
+  mutate(S1234 = case_when((Steroid_1=="yes"|Steroid_2=="yes"|Steroid_3=="yes"|Steroid_4=="yes") ~ "yes",
+                           (is.na(Steroid_1) & is.na(Steroid_2) & is.na(Steroid_3) & is.na(Steroid_4)) ~ NA_character_,
+                           T ~ "no"))
+addmargins(table(STOPPIT2_key$S1234, STOPPIT2_key$Steroids, useNA = "always")) %>% kable() %>%
+  kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))
+
+```
+
+There is a date associated with each of the steroid records in the Hospital Admission Labour table but not the Labour Delivery table. The earliest steroid date from Hospital Admission Labour is used to compare to the first twin's delivery date for the table below.
+
+Most individuals therefore show up under NA. How best to use / interpret these data?
+
+```{r stoppit2 n, warning=FALSE}
+# key vars
+STOPPIT2_sum <- STOPPIT2_key %>%
+  mutate(minsteroiddate=pmin(SteroidDateStarted_1,SteroidDateStarted_2, SteroidDateStarted_3, SteroidDateStarted_4, na.rm = TRUE)) %>%
+  mutate(daysbefore=as.numeric(TwinOneDateOfDelivery-minsteroiddate)) %>%
+  mutate(timing =if_else(daysbefore>7, "more than 7 days", "7 days or less")) %>%
+  select(StudyNo, Steroid_1, Steroid_2, Steroid_3, Steroid_4, Steroids, timing, TwinOneDateOfDelivery, minsteroiddate)
+
+STOPPIT2_sum <- STOPPIT2_sum %>%
+  group_by(Steroids, timing) %>% summarise(STOPPIT2=n()) %>% ungroup()
+
+#add total column
+STOPPIT2_sum[10,] <- c(NA_integer_, NA_integer_, colSums(STOPPIT2_sum[,3]))
+#insert "total" - have to first change from factor with fixed labels
+STOPPIT2_sum$Steroids <- as.character(STOPPIT2_sum$Steroids)
+STOPPIT2_sum[10,1] <- "Total"
+STOPPIT2_sum[10,2] <- ""
+
+STOPPIT2_sum %>% kable() %>% kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))
+
+```
+
+## Neonatal outcomes
+
+In the following data, participants for whom any yes/no value on steroid use are included, regardless of whether a date is available.
+
+```{r stoppit2 neonatal outcomes, warning=FALSE}
+
+STOPPIT2_key <-  STOPPIT2_key %>% mutate(anyS = case_when((Steroid_1=="yes"|Steroid_2=="yes"|Steroid_3=="yes"|Steroid_4=="yes"|Steroids=="yes") ~ "yes",
+                          (is.na(Steroid_1) & is.na(Steroid_2) & is.na(Steroid_3) & is.na(Steroid_4) & is.na(Steroids)) ~ NA_character_,
+                           T ~ "no"))
+temp <-STOPPIT2_key %>% select(StudyNo, anyS)
+
+temp2 <- STOPPIT2_tblCRFLabourDelivery %>% select(StudyNo, PregnancyOutcomeTwinOne,PregnancyOutcomeTwinTwo, TwinOneWeight, TwinTwoWeight)
+
+stoppit2_out <- full_join(temp, temp2, by = "StudyNo")
+
+rm(temp, temp2)
+
+outcomes_tw1 <- stoppit2_out %>% select(StudyNo, anyS, PregnancyOutcomeTwinOne) %>%
+  group_by(anyS, PregnancyOutcomeTwinOne) %>% summarise(Twin1No=n()) %>%
+  mutate(Twin1pc=round(100*Twin1No/(sum(Twin1No)),1)) %>% ungroup() %>%
+  rename(outcome=PregnancyOutcomeTwinOne)
+
+outcomes_tw2 <- stoppit2_out %>% select(StudyNo, anyS, PregnancyOutcomeTwinTwo) %>%
+  group_by(anyS, PregnancyOutcomeTwinTwo) %>% summarise(Twin2No=n()) %>%
+  mutate(Twin2pc=round(100*Twin2No/(sum(Twin2No)),1)) %>% ungroup() %>%
+  rename(outcome=PregnancyOutcomeTwinTwo)
+
+outcomes_tw12 <- outcomes_tw1 %>% full_join(outcomes_tw2, by = c("anyS", "outcome")) %>% arrange(anyS, outcome)
+
+#add total column
+outcomes_tw12[13,] <- c(NA_integer_, NA_integer_, colSums(outcomes_tw12[,3]), NA_integer_, colSums(outcomes_tw12[,5]), NA_integer_)
+#insert "total" - have to first change from factor with fixed labels
+outcomes_tw12$outcome <- as.character(outcomes_tw12$outcome)
+outcomes_tw12[13,1] <- "Total"
+outcomes_tw12[13,2] <- ""
+outcomes_tw12[13,4] <- ""
+outcomes_tw12[13,6] <- ""
+
+
+outcomes_tw12 %>% kable(col.names = c("Any steroid record", "Neonatal outcome", "Twin 1 #", "Twin 1 %", "Twin 2 #", "Twin 2 %")) %>%
+  kable_styling(full_width = F, position = "center", bootstrap_options = c("striped"))
+```
+
+## Birthweight
+
+```{r stoppit2 birthweight, warning=FALSE, fig.height = 3, fig.width = 10, fig.align="center"}
+
+plot1 <- STOPPIT2_key %>% ggplot(aes(TwinOneWeight, group = as.factor(anyS), fill=as.factor(anyS))) +
+           geom_density(alpha=0.35)
+
+plot2 <- STOPPIT2_key %>% ggplot(aes(TwinTwoWeight, group = as.factor(anyS), fill=as.factor(anyS))) +
+           geom_density(alpha=0.35)
+
+grid.arrange(plot1, plot2, ncol=2)
+
+```
+
+
+```{rinclude = FALSE}
+
+# OPPTIMUM
+
+## Study
+
+* [Norman, J. et al. Vaginal progesterone prophylaxis for preterm birth (the OPPTIMUM study): a multicentre, randomised, double-blind trial. Lancet, 2016 ](https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(16)00350-0/fulltext)
+
+
+## Data
+
+* "U:\\Datastore\\CMVM\\smgphs\\groups\\sstock-Co-OPT\\CO-OPT\\Data\\OPPTIMUM"
+* Data provided in 11 tables
+
+
+
+## Participants
+```
